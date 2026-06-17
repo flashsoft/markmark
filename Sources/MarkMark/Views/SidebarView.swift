@@ -8,6 +8,7 @@ struct SidebarView: View {
     let documentViewModel: DocumentViewModel
     @Environment(\.language) private var language
     @Environment(\.themeColors) private var themeColors
+    @FocusState private var isFileTreeFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -90,7 +91,8 @@ struct SidebarView: View {
                 )
 
                 Button {
-                    fileTreeViewModel.selectedFileURL = url
+                    isFileTreeFocused = true
+                    fileTreeViewModel.activateNode(node)
                 } label: {
                     FileRowView(
                         node: node,
@@ -113,7 +115,8 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func singleFileSelectionHighlight(for url: URL) -> some View {
-        if fileTreeViewModel.selectedFileURL == url {
+        if fileTreeViewModel.activeNodeURL == url
+            || (fileTreeViewModel.activeNodeURL == nil && fileTreeViewModel.selectedFileURL == url) {
             RoundedRectangle(cornerRadius: 6)
                 .fill(themeColors.accentSoft)
         }
@@ -122,36 +125,63 @@ struct SidebarView: View {
     // MARK: - 目录树（使用递归 DisclosureGroup 渲染嵌套结构）
 
     private var directoryTreeView: some View {
-        List {
-            ForEach(fileTreeViewModel.nodes) { node in
-                FileNodeRow(node: node, fileTreeViewModel: fileTreeViewModel, documentViewModel: documentViewModel)
-            }
-        }
-        .listStyle(.sidebar)
-        .scrollContentBackground(.hidden)
-        .scrollIndicators(.automatic)
-        .background(OverlayScrollerHelper())
-        .focusable()
-        .onMoveCommand { direction in
-            switch direction {
-            case .up:
-                _ = fileTreeViewModel.moveSelection(direction: -1)
-            case .down:
-                _ = fileTreeViewModel.moveSelection(direction: 1)
-            default:
-                break
-            }
-        }
-        .onKeyPress(.return) {
-            if let url = fileTreeViewModel.selectedFileURL,
-               let node = findNode(in: fileTreeViewModel.nodes, url: url) {
-                if node.isDirectory {
-                    fileTreeViewModel.toggleExpand(url)
-                } else {
-                    fileTreeViewModel.selectFile(node)
+        ScrollViewReader { proxy in
+            List {
+                ForEach(fileTreeViewModel.nodes) { node in
+                    FileNodeRow(node: node, fileTreeViewModel: fileTreeViewModel, documentViewModel: documentViewModel)
                 }
             }
-            return .handled
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .scrollIndicators(.automatic)
+            .background(OverlayScrollerHelper())
+            .focusable()
+            .focused($isFileTreeFocused)
+            .onAppear { isFileTreeFocused = true }
+            .onTapGesture { isFileTreeFocused = true }
+            .onMoveCommand { direction in
+                switch direction {
+                case .up:
+                    _ = fileTreeViewModel.moveSelection(direction: -1)
+                case .down:
+                    _ = fileTreeViewModel.moveSelection(direction: 1)
+                default:
+                    break
+                }
+            }
+            .onKeyPress(.upArrow) {
+                _ = fileTreeViewModel.moveSelection(direction: -1)
+                return .handled
+            }
+            .onKeyPress(.downArrow) {
+                _ = fileTreeViewModel.moveSelection(direction: 1)
+                return .handled
+            }
+            .onKeyPress(.leftArrow) {
+                fileTreeViewModel.collapseActiveNodeOrMoveToParent()
+                return .handled
+            }
+            .onKeyPress(.rightArrow) {
+                fileTreeViewModel.expandActiveNode()
+                return .handled
+            }
+            .onKeyPress(.return) {
+                if let url = fileTreeViewModel.activeNodeURL ?? fileTreeViewModel.selectedFileURL,
+                   let node = findNode(in: fileTreeViewModel.nodes, url: url) {
+                    if node.isDirectory {
+                        fileTreeViewModel.toggleExpand(url)
+                    } else {
+                        fileTreeViewModel.selectFile(node)
+                    }
+                }
+                return .handled
+            }
+            .onChange(of: fileTreeViewModel.activeNodeURL) { _, newURL in
+                guard let newURL else { return }
+                withAnimation(.easeInOut(duration: 0.12)) {
+                    proxy.scrollTo(newURL, anchor: .center)
+                }
+            }
         }
     }
 
@@ -217,12 +247,13 @@ struct FileNodeRow: View {
     @Environment(\.themeColors) private var themeColors
     @Environment(\.language) private var language
 
-    /// 是否为当前选中项
-    private var isSelected: Bool {
-        fileTreeViewModel.selectedFileURL == node.path
+    /// 是否为当前 active 项
+    private var isActive: Bool {
+        fileTreeViewModel.activeNodeURL == node.path
+            || (fileTreeViewModel.activeNodeURL == nil && fileTreeViewModel.selectedFileURL == node.path)
     }
 
-    /// 选中高亮（模仿系统选中样式：圆角、accentSoft）
+    /// Active 高亮（模仿系统选中样式：圆角、accentSoft）
     ///
     /// 作为行内容（FileRowView）的 `.background` 绘制，而非 `.listRowBackground`。
     /// `.listRowBackground` 会铺满整行单元格（含 List 默认行内边距、且不随层级缩进），
@@ -231,7 +262,7 @@ struct FileNodeRow: View {
     /// FileRowView 自身负责撑满可点击宽度和提供内边距，避免选中背景小于热区。
     @ViewBuilder
     private var selectionHighlight: some View {
-        if isSelected {
+        if isActive {
             RoundedRectangle(cornerRadius: 6)
                 .fill(themeColors.accentSoft)
         }
@@ -253,17 +284,19 @@ struct FileNodeRow: View {
                     .background(selectionHighlight)
                     .contentShape(Rectangle())
                     .onTapGesture {
-                        // 点击目录标签区域切换展开/折叠
+                        // 点击目录标签区域先 active，再切换展开/折叠
+                        fileTreeViewModel.activateNode(node)
                         fileTreeViewModel.toggleExpand(node.path)
                     }
                     .contextMenu { directoryContextMenu }
             }
             .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
             .listRowBackground(Color.clear)
+            .id(node.path)
         } else {
             // 文件行使用 Button 确保可靠选中
             Button {
-                fileTreeViewModel.selectFile(node)
+                fileTreeViewModel.activateNode(node)
             } label: {
                 FileRowView(node: node, fileTreeViewModel: fileTreeViewModel, documentViewModel: documentViewModel)
                     .background(selectionHighlight)
@@ -273,6 +306,7 @@ struct FileNodeRow: View {
             .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
             .listRowBackground(Color.clear)
             .contextMenu { fileContextMenu }
+            .id(node.path)
         }
     }
 

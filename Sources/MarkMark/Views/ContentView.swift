@@ -630,6 +630,7 @@ private struct DirectoryChangeModifier: ViewModifier {
                     // （例如：从单文件模式切到目录模式时，selectedFileURL 仍指向旧文件，
                     // 但 documentViewModel 已被清空，导致点击同一文件不触发 onChange）
                     fileTreeViewModel.selectedFileURL = nil
+                    fileTreeViewModel.activeNodeURL = nil
                     documentViewModel.clearDocument()
                     Task {
                         await fileTreeViewModel.loadDirectory(dir)
@@ -828,6 +829,7 @@ private struct SettingsChangeModifier: ViewModifier {
     private func reloadFileTree() {
         guard let dir = appViewModel.rootDirectory else { return }
         fileTreeViewModel.selectedFileURL = nil
+        fileTreeViewModel.activeNodeURL = nil
         Task {
             await fileTreeViewModel.loadDirectory(dir)
         }

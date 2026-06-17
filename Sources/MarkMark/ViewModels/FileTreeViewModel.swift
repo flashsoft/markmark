@@ -15,7 +15,16 @@ final class FileTreeViewModel {
     var expandedDirs: Set<URL> = []
 
     /// 当前选中的文件 URL
-    var selectedFileURL: URL?
+    var selectedFileURL: URL? {
+        didSet {
+            if let selectedFileURL {
+                activeNodeURL = selectedFileURL
+            }
+        }
+    }
+
+    /// 当前键盘/鼠标 active 的节点 URL（目录和文件都可以 active）
+    var activeNodeURL: URL?
 
     /// 是否正在加载
     var isLoading: Bool = false
@@ -89,6 +98,9 @@ final class FileTreeViewModel {
 
             // 默认展开根目录（显示第一级目录和文件）
             expandedDirs.insert(directory)
+            if activeNodeURL == nil {
+                activeNodeURL = selectedFileURL ?? directory
+            }
         } catch {
             errorMessage = error.localizedDescription
             nodes = []
@@ -150,6 +162,10 @@ final class FileTreeViewModel {
                 selectedFileURL = nil
             }
 
+            if let active = activeNodeURL, !allPaths.contains(active) {
+                activeNodeURL = selectedFileURL ?? dir
+            }
+
             isEmptyDirectory = !fileService.directoryContainsMarkdown(
                 dir,
                 showHiddenFiles: settings.showHiddenFiles
@@ -179,6 +195,7 @@ final class FileTreeViewModel {
         expandedDirs = []
         if clearSelection {
             selectedFileURL = nil
+            activeNodeURL = nil
         }
         errorMessage = nil
         isEmptyDirectory = false
@@ -200,9 +217,18 @@ final class FileTreeViewModel {
         expandedDirs.contains(url)
     }
 
+    /// 让节点进入 active 态；文件 active 后会立即选中并打开。
+    func activateNode(_ node: FileNode) {
+        activeNodeURL = node.path
+        if !node.isDirectory {
+            selectFile(node)
+        }
+    }
+
     /// 选中文件（包括非 .md 文件，以触发错误提示）
     func selectFile(_ node: FileNode) {
         if node.isDirectory { return }
+        activeNodeURL = node.path
         selectedFileURL = node.path
     }
 
@@ -218,13 +244,13 @@ final class FileTreeViewModel {
         return result
     }
 
-    /// 在扁平列表中移动选中项
+    /// 在扁平列表中移动 active 项；移动到文件时立即打开，移动到目录时只更新 active 态。
     func moveSelection(direction: Int) -> FileNode? {
         let flat = flattenedVisibleNodes()
         guard !flat.isEmpty else { return nil }
 
         let currentIndex: Int
-        if let currentURL = selectedFileURL,
+        if let currentURL = activeNodeURL ?? selectedFileURL,
            let idx = flat.firstIndex(where: { $0.path == currentURL }) {
             currentIndex = idx
         } else {
@@ -233,14 +259,49 @@ final class FileTreeViewModel {
 
         let newIndex = max(0, min(flat.count - 1, currentIndex + direction))
         let node = flat[newIndex]
-
-        if node.isDirectory {
-            toggleExpand(node.path)
-        } else {
-            selectFile(node)
-        }
+        activateNode(node)
 
         return node
+    }
+
+    /// 展开 active 目录。文件 active 时不处理。
+    func expandActiveNode() {
+        guard let node = activeNode() else { return }
+        if node.isDirectory {
+            expandedDirs.insert(node.path)
+        }
+    }
+
+    /// 收起 active 目录；若目录已收起或 active 为文件，则移动到父目录。
+    func collapseActiveNodeOrMoveToParent() {
+        guard let node = activeNode() else { return }
+        if node.isDirectory, expandedDirs.contains(node.path) {
+            expandedDirs.remove(node.path)
+            return
+        }
+        if let parent = parentDirectoryNode(for: node.path) {
+            activeNodeURL = parent.path
+        }
+    }
+
+    private func activeNode() -> FileNode? {
+        guard let url = activeNodeURL ?? selectedFileURL else { return nil }
+        return findNode(in: nodes, url: url)
+    }
+
+    private func parentDirectoryNode(for url: URL) -> FileNode? {
+        let parentURL = url.deletingLastPathComponent()
+        return findNode(in: nodes, url: parentURL).flatMap { $0.isDirectory ? $0 : nil }
+    }
+
+    private func findNode(in nodes: [FileNode], url: URL) -> FileNode? {
+        for node in nodes {
+            if node.path == url { return node }
+            if let children = node.children, let found = findNode(in: children, url: url) {
+                return found
+            }
+        }
+        return nil
     }
 
     // MARK: - 新建文件
